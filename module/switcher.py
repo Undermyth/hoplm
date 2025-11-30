@@ -2,12 +2,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from jaxtyping import Float
+
 from fla.modules import ShortConvolution
 from fla.ops.delta_rule import chunk_delta_rule
-
+from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
 from fla.layers.utils import get_unpad_data, index_first_axis
+
+from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
 from .cache_utils import Cache
 
@@ -126,9 +129,6 @@ class Switcher(nn.Module):
 
         self.threshold = nn.Parameter(torch.ones(1, 1, self.n_heads, 1).cuda() * 0.5)
 
-        # RoPE 编码器
-        self.rope = RotaryEmbedding(rotary_emb_dim)
-
         self.mode = 'random'
 
     def forward(self, hidden_states: torch.Tensor, *args, **kwargs):
@@ -153,7 +153,7 @@ class Switcher(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        q, k = self.rope(q, k)
+        # q, k = self.rope(q, k)
 
         o_attn = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         o_attn = o_attn.transpose(1, 2).contiguous()
@@ -186,17 +186,13 @@ class Switcher(nn.Module):
         return o, s
 
 class CrossSwitcher(nn.Module):
-    def __init__(self, layer_idx: int, dim: int = 128, n_heads: int = 4, rotary_emb_dim: int = 8, **kwargs):
+    def __init__(self, layer_idx: int, dim: int = 128, n_heads: int = 4, **kwargs):
         super().__init__()
         self.dim = dim
         self.n_heads = n_heads
         self.head_dim = dim // n_heads
-        self.rotary_emb_dim = rotary_emb_dim
         self.layer_idx = layer_idx
 
-        # 确保 rotary_emb_dim 不超过 head_dim，并且是偶数
-        assert self.rotary_emb_dim <= self.head_dim, "rotary_emb_dim must be less than or equal to head_dim"
-        assert self.rotary_emb_dim % 2 == 0, "rotary_emb_dim must be even"
         assert self.head_dim % 2 == 0, "head_dim must be even"
 
         # 线性变换层
@@ -207,6 +203,8 @@ class CrossSwitcher(nn.Module):
         self.g_proj = nn.Linear(dim, dim, bias=False)
 
         self.b_proj = nn.Linear(dim, n_heads, bias=False)
+        self.a_proj = nn.Linear(self.dim, self.n_heads, bias=False)
+        self.dt_bias = nn.Parameter(torch.ones(self.n_heads) * 0.5)
 
         self.q_conv1d = ShortConvolution(
             hidden_size=self.dim,
@@ -233,6 +231,10 @@ class CrossSwitcher(nn.Module):
         self.threshold = nn.Parameter(torch.ones(1, 1, self.n_heads, 1).cuda() * 0.5)
 
         self.mode = 'random'
+        self.s_proj.weight.requires_grad_(False)
+        self.threshold.requires_grad_(False)
+
+        self.is_causal = True   # used for huggingface flash attention option
 
     def forward(
         self, 
@@ -240,7 +242,8 @@ class CrossSwitcher(nn.Module):
         k_cache: torch.Tensor, 
         v_cache: torch.Tensor,
         position_embeddings: Tuple[torch.Tensor, torch.Tensor],
-        cu_seqlens: Optional[torch.Tensor] = None,
+        force_attn: bool = False,
+        cu_seqlens: Optional[torch.Tensor] = None,                # do not support attention_mask by default. use cu_seqlens instead
         past_key_values: Optional[Cache] = None, 
         use_cache: bool = False, 
         *args, **kwargs
@@ -269,55 +272,97 @@ class CrossSwitcher(nn.Module):
         k, k_conv_state = self.k_conv1d(k, cache=k_conv_state, cu_seqlens=cu_seqlens, output_final_state=use_cache)
         v, v_conv_state = self.v_conv1d(v, cache=v_conv_state, cu_seqlens=cu_seqlens, output_final_state=use_cache)
 
+        q, k, v = map(lambda x: rearrange(x, "... (h d) -> ... h d", d=self.head_dim), (q, k, v))
         beta = self.b_proj(hidden_states).sigmoid()
 
-        q, k, v = map(lambda x: rearrange(x, "... (h d) -> ... h d", d=self.head_dim), (q, k, v))
-
         # [VARI] should qk norm also be applied on softmax attention?
-        o, recurrent_state = chunk_delta_rule(
-            q=q, k=k, v=v, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
-        )
+        gamma = torch.relu(self.a_proj(hidden_states).float() + self.dt_bias)
+        gamma = 2 / (torch.exp(gamma) + torch.exp(-gamma))
+        gamma = gamma.log()
 
-        if use_cache:
-            past_key_values.update(
-                recurrent_state,
-                (q_conv_state, k_conv_state, v_conv_state), 
-                self.layer_idx, 
-                q_len
-            )
+        if self.training and self.mode == 'random':
+            # random_gate = torch.rand(1).item()
+            random_gate = 0.8
+            random_use_attn = (random_gate > 0.7) or force_attn
+        else:
+            random_use_attn = False
+            
+        if not random_use_attn:
+            if q_len > 64:
+                o, recurrent_state = chunk_gated_delta_rule(
+                    q=q, k=k, v=v, g=gamma, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
+                )
+            else:
+                o, recurrent_state = fused_recurrent_gated_delta_rule(
+                    q=q, k=k, v=v, g=gamma, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
+                )
+
+            if use_cache:
+                past_key_values.update(
+                    recurrent_state,
+                    (q_conv_state, k_conv_state, v_conv_state), 
+                    self.layer_idx, 
+                    q_len
+                )
 
         # ------------------------------------------------------------------------------
         # hybrid attention into output
         # ------------------------------------------------------------------------------
         s = None
-        if self.training or recurrent_state is not None:
+        if self.training or q_len == 1:     # in inference, we do not allow any attention in prefilling, only switching in decoding
             q = q.transpose(1, 2)
-            # k = k.transpose(1, 2)
-            # v = v.transpose(1, 2)
-
-            cos, sin = position_embeddings
-            q = apply_rotary_pos_emb(q, cos, sin)   # k will be embedded in the kv cache
-
-            o_attn = F.scaled_dot_product_attention(q, k_cache, v_cache, is_causal=True)
-            o_attn = o_attn.transpose(1, 2).contiguous()
-            o_attn = self.o_norm(o_attn)
-
-            o = self.o_norm(o)      # [VARI] should norm also be shared between attentions?
-
-            if self.mode == 'random':
-                s = torch.ones(o_attn.shape[0], o_attn.shape[1], o_attn.shape[2], 1, device=o.device) * 0.3
-                s = torch.bernoulli(s).detach()
-            else:
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            if self.mode == 'hybrid':
+                o = self.o_norm(o)
                 o_reshaped = rearrange(o, "b t h d -> b t (h d)")
                 s = self.s_proj(o_reshaped).sigmoid().unsqueeze(-1)    # [VARI] maybe before norm?
                 s = heaviside(s - self.threshold)
+            if (self.mode == 'random' and random_use_attn) or self.mode == 'hybrid':
+                q = q / torch.linalg.norm(q, dim=-1, keepdim=True)
+                cos, sin = position_embeddings
+                q = apply_rotary_pos_emb(q, cos, sin)   # k will be embedded in the kv cache
 
-            if self.mode == 'quadratic':
-                o = o_attn
-            elif self.mode == 'hybrid' or self.mode == 'random':
-                o = (1 - s) * o + s * o_attn  # [VARI] maybe the inverse?
+                # o_attn = F.scaled_dot_product_attention(q, k_cache, v_cache, is_causal=True)
+                attention_interface = ALL_ATTENTION_FUNCTIONS["flash_attention_2"]
+                o_attn, attn_weights = attention_interface(
+                    self,                        # used to determine dtype in huggingface wrapper
+                    q, k_cache, v_cache,
+                    attention_mask=None,
+                    cu_seq_lens_q=cu_seqlens,
+                    cu_seq_lens_k=cu_seqlens
+                )
+                # o_attn = o_attn.transpose(1, 2).contiguous()
+                o_attn = self.o_norm(o_attn)
+                if self.mode == 'random':
+                    o = o_attn
+                else:
+                    o = self.o_norm(o)
+                    o = (1 - s) * o + s * o_attn
             else:
-                assert self.mode == 'linear'
+                o = self.o_norm(o)
+
+            # o = self.o_norm(o)      # [VARI] should norm also be shared between attentions?
+
+            # if self.mode == 'random':
+            #     s = torch.ones(o_attn.shape[0], o_attn.shape[1], o_attn.shape[2], 1, device=o.device) * 0.3
+            #     s = torch.bernoulli(s).detach()
+            # else:
+            #     o_reshaped = rearrange(o, "b t h d -> b t (h d)")
+            #     s = self.s_proj(o_reshaped).sigmoid().unsqueeze(-1)    # [VARI] maybe before norm?
+            #     s = heaviside(s - self.threshold)
+
+            # if self.mode == 'quadratic':
+            #     o = o_attn
+            # elif self.mode == 'hybrid' or self.mode == 'random':
+            #     o = (1 - s) * o + s * o_attn  # [VARI] maybe the inverse?
+            # else:
+            #     assert self.mode == 'linear'
+
+        if self.training:
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            o = o + 0 * (beta.unsqueeze(-1) + gamma.unsqueeze(-1) + k + v)    # prevent unused parameter warning in DDP
         
         g = self.g_proj(hidden_states)
         g = rearrange(g, "... (h d) -> ... h d", d=self.head_dim)

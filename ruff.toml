@@ -1,2 +1,0 @@
-[lint]
-ignore = ["F722"] # jaxtyping 注释错误
