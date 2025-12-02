@@ -100,6 +100,8 @@ class LanguageModel(L.LightningModule):
         output = self.model(input_ids=x, label=y)
         loss = output.loss
         self.log('train/loss', loss.item(), on_step=True, prog_bar=True, logger=True)
+        self.log('train/pq_idx', self.pq_idx.item(), on_step=True, prog_bar=True, logger=False)
+        self.log('train/rg_idx', self.rg_idx.item(), on_step=True, prog_bar=True, logger=False)
         return loss
    
 
@@ -128,12 +130,12 @@ class LanguageModel(L.LightningModule):
             batch_size=4,
             apply_chat_template=False
         )        
-        # print(results.keys())
-        print(results['results'])
+        self.log('lambada_openai/perplexity', results['results']['lambada_openai']['perplexity,none'], logger=True, sync_dist=True)
+        self.log('lambada_openai/acc', results['results']['lambada_openai']['acc,none'], logger=True, sync_dist=True)
         
     def on_save_checkpoint(self, checkpoint):
-        pq_idx = torch.Tensor([self.pq_idx], device=self.device)        
-        rg_idx = torch.Tensor([self.rg_idx], device=self.device)
+        pq_idx = torch.tensor([self.pq_idx], device=self.device)        
+        rg_idx = torch.tensor([self.rg_idx], device=self.device)
         pq_idx = self.all_gather(pq_idx)
         rg_idx = self.all_gather(rg_idx)
         if self.global_rank == 0:
@@ -144,13 +146,15 @@ class LanguageModel(L.LightningModule):
         rg_idx = checkpoint['dataset_state_dict']['rg_idx']
         self.pq_idx = pq_idx[self.global_rank].item()
         self.rg_idx = rg_idx[self.global_rank].item()
-        self.train_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, split='train')
-        self.test_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, split='test')
+        self.print(f'resume to dataset at pq_idx = {self.pq_idx}, rg_idx = {self.rg_idx}')
+        state_dict = {'pq_idx': pq_idx[self.global_rank].item(), 'rg_idx': rg_idx[self.global_rank].item()}
+        self.train_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='train')
+        self.test_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='test')
         
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=1.5e-4, betas=(0.9, 0.95), weight_decay=1e-3)
+        optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, betas=(0.9, 0.95), weight_decay=1e-3)
         scheduler = create_warmup_cosine_scheduler(
-            optimizer=optimizer, warmup_epochs=20, total_epochs=1000, eta_min=3e-5
+            optimizer=optimizer, warmup_epochs=270, total_epochs=54163, eta_min=3e-5
         )
         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1}}
 

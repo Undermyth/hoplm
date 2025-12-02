@@ -27,7 +27,7 @@ class SwitcherConfig:
     n_heads: int = 8
     rotary_base: int = 10000
     expand_ratio: int = 4
-    hybrid_freq: int = 4  # every k layers, use hybrid switcher attention. Otherwise use delta rule.
+    hybrid_freq: int = 1  # every k layers, use hybrid switcher attention. Otherwise use delta rule.
     random_force_attn: bool = True  # during training, force at least one decoder layer to use attention to prevent unused parameter error from DDP
 
 @dataclass
@@ -179,6 +179,7 @@ class SwitcherModel(nn.Module):
                 position_ids = index_first_axis(position_ids.flatten().unsqueeze(-1), indices).squeeze(-1).unsqueeze(0)
             else:
                 position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0).expand_as(input_ids)    # maximum length in the batch
+        position_ids = position_ids.to(hidden_states.device)
 
         attention_mask = None    # only use cu_seqlens instead of attention_mask for varlen inference
 

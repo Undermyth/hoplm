@@ -55,6 +55,8 @@ class StreamingParquet(IterableDataset):
         self.tokenizer_threads = tokenizer_threads
         self.pq_idx = state_dict['pq_idx'] if state_dict is not None else 0
         self.rg_idx = state_dict['rg_idx'] if state_dict is not None else None
+        if state_dict is not None:
+            print(f'[streaming parquet] start loader at pq_idx = {self.pq_idx}, rg_idx = {self.rg_idx}')
 
         self.inf_batch_document_iterator = self.document_batches()
 
@@ -83,9 +85,11 @@ class StreamingParquet(IterableDataset):
                     batch = rg.column('text').to_pylist() # each batch is a parquet group, e.g. 1024 rows
                     # the tokenizer encode might want to go in even smaller batches, e.g. 128 rows
                     for i in range(0, len(batch), self.tokenizer_batch_size):
+                        # print(pq_idx, rg_idx, i, len(batch))
                         yield batch[i:i+self.tokenizer_batch_size], (pq_idx, rg_idx)
                     rg_idx += ddp_world_size # advance to the next row group (in DDP)
                 pq_idx += 1 # advance to the next parquet file
+                
 
     def __iter__(self):
         # Now emit batches of tokens.

@@ -281,8 +281,7 @@ class CrossSwitcher(nn.Module):
         gamma = gamma.log()
 
         if self.training and self.mode == 'random':
-            # random_gate = torch.rand(1).item()
-            random_gate = 0.8
+            random_gate = torch.rand(1).item()
             random_use_attn = (random_gate > 0.7) or force_attn
         else:
             random_use_attn = False
@@ -341,6 +340,9 @@ class CrossSwitcher(nn.Module):
                     o = (1 - s) * o + s * o_attn
             else:
                 o = self.o_norm(o)
+
+        else:    # inference, prefilling
+            o = self.o_norm(o)
 
             # o = self.o_norm(o)      # [VARI] should norm also be shared between attentions?
 
