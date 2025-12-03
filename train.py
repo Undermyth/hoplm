@@ -22,7 +22,7 @@ tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False)
 model = LanguageModel(
     model=model,
     tokenizer=tokenizer,
-    parquet_path='/data4/csy/transformers/hub/datasets--skymizer--fineweb-edu-dedup-45B/snapshots/78b628cd0cc608f00a2c8057af503a99b3fb6440/data',
+    parquet_path='/data2/csy/transformers/hub/datasets--skymizer--fineweb-edu-dedup-45B/parquets',
     seq_len=2048,
     batch_size=6
 )
@@ -31,12 +31,12 @@ checkpoint_callback = cbs.ModelCheckpoint(
     dirpath="./checkpoints",
     # save_last='link',
     save_on_exception=False,
-    every_n_train_steps=1365,    # save checkpoint every 0.5B tokens. 512M / (6 * 4 * 8 * 2K) = 1365
+    every_n_train_steps=1365 * 8,    # save checkpoint every 0.5B tokens. 512M / (6 * 4 * 8 * 2K) = 1365
     save_top_k=-1,
 )
 
 # logger = CSVLogger(save_dir='./logs/', flush_logs_every_n_steps=50)
-logger = WandbLogger(project="hoplm-0.4b", name="gdn-0.4b")
+logger = WandbLogger(project="hoplm-0.4b", name="gdn-0.4b-mu")
 
 prog_callback = cbs.RichProgressBar()
 
@@ -48,12 +48,13 @@ trainer = L.Trainer(
     devices=[0, 1, 2, 3],
     strategy="ddp",
     precision="bf16-mixed",
+    # gradient_clip_val=1.0,
     callbacks=[checkpoint_callback, prog_callback, lr_monitor],
     logger=logger,
-    log_every_n_steps=20,
+    log_every_n_steps=20 * 8,
     val_check_interval=10920,
     num_sanity_val_steps=0,
-    accumulate_grad_batches=8,
+    # accumulate_grad_batches=8,
     enable_model_summary=True,
 )
 

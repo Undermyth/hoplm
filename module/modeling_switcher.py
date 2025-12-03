@@ -271,11 +271,11 @@ class SwitcherModelForCausalLM(nn.Module):
 if __name__ == '__main__':
     config = SwitcherConfig()
     model = SwitcherModelForCausalLM(config).to(torch.bfloat16).cuda()
-    input_ids = torch.randint(0, 10000, (2, 2048)).cuda()
-    with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-        output = model(input_ids=input_ids, label=input_ids)
-    loss = output.loss
-    loss.backward()
+    # input_ids = torch.randint(0, 10000, (2, 2048)).cuda()
+    # with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
+    #     output = model(input_ids=input_ids, label=input_ids)
+    # loss = output.loss
+    # loss.backward()
     for name, param in model.named_parameters():
-        if param.grad is None:
-            print(name)    
+        if param.dim() > 2:
+            print(name, param.shape)

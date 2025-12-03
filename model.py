@@ -83,6 +83,10 @@ class LanguageModel(L.LightningModule):
         # resume training dataset
         self.pq_idx = 0
         self.rg_idx = None
+
+        self.automatic_optimization = False
+        self.grad_accum = 8
+        self.grad_clip = 1.0
         
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=1)    # distributed sampling and batching done within StreamingParquet
@@ -99,7 +103,20 @@ class LanguageModel(L.LightningModule):
         self.rg_idx = state_dict['rg_idx']
         output = self.model(input_ids=x, label=y)
         loss = output.loss
-        self.log('train/loss', loss.item(), on_step=True, prog_bar=True, logger=True)
+        self.log('train/loss', loss.detach().item(), on_step=True, prog_bar=True, logger=True)
+
+        # manual optimization for multiple optimizers
+        loss = loss / self.grad_accum
+        self.manual_backward(loss)
+        if (batch_idx + 1) % self.grad_accum == 0:
+            for opt in self.optimizers():
+                self.clip_gradients(opt, gradient_clip_val=self.grad_clip, gradient_clip_algorithm='norm')
+                opt.step()
+                opt.zero_grad()
+            for sch in self.lr_schedulers():
+                sch.step()
+        
+        # self.log('train/loss', loss.item(), on_step=True, prog_bar=True, logger=True)
         self.log('train/pq_idx', self.pq_idx.item(), on_step=True, prog_bar=True, logger=False)
         self.log('train/rg_idx', self.rg_idx.item(), on_step=True, prog_bar=True, logger=False)
         return loss
@@ -153,9 +170,33 @@ class LanguageModel(L.LightningModule):
         self.test_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='test')
         
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, betas=(0.9, 0.95), weight_decay=1e-3)
-        scheduler = create_warmup_cosine_scheduler(
-            optimizer=optimizer, warmup_epochs=270, total_epochs=54163, eta_min=3e-5
+        emb_params = list(self.model.model.emb.parameters())
+        hidden_1d_params = [p for n, p in self.model.model.enc.named_parameters() if p.dim() < 2 or p.dim() == 3]    # 3 for causal convolution parameters
+        hidden_2d_params = [p for n, p in self.model.model.enc.named_parameters() if p.dim() == 2]
+        head_params = list(self.model.lm_head.parameters())
+        adam_groups = [
+            dict(params=emb_params, lr=0.2),
+            dict(params=head_params, lr=0.002),
+            dict(params=hidden_1d_params, lr=0.02)
+        ]
+        adam_opt = torch.optim.AdamW(adam_groups, betas=(0.8, 0.95), weight_decay=0.)
+        muon_opt = torch.optim.Muon(hidden_2d_params, lr=0.02, momentum=0.95, weight_decay=0.)
+        # optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, betas=(0.9, 0.95), weight_decay=1e-3)
+        adam_scheduler = create_warmup_cosine_scheduler(
+            optimizer=adam_opt, warmup_epochs=270, total_epochs=54163, eta_min=2e-3
         )
-        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1}}
-
+        muon_scheduler = create_warmup_cosine_scheduler(
+            optimizer=muon_opt, warmup_epochs=270, total_epochs=54163, eta_min=2e-3
+        )
+        adam_scheduler_cfg = {
+            'scheduler': adam_scheduler,
+            'interval': "step",
+            'frequency': 1
+        }
+        muon_scheduler_cfg = {
+            'scheduler': muon_scheduler,
+            'interval': "step",
+            'frequency': 1
+        }
+        # return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1}}
+        return [adam_opt, muon_opt], [adam_scheduler_cfg, muon_scheduler_cfg]
