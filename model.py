@@ -130,6 +130,7 @@ class LanguageModel(L.LightningModule):
             batch_size=4,
             apply_chat_template=False
         )        
+        self.print(results['results'])
         self.log('lambada_openai/perplexity', results['results']['lambada_openai']['perplexity,none'], logger=True, sync_dist=True)
         self.log('lambada_openai/acc', results['results']['lambada_openai']['acc,none'], logger=True, sync_dist=True)
         

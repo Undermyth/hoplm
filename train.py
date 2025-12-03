@@ -15,13 +15,14 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 config = SwitcherConfig()
 model = SwitcherModelForCausalLM(config).to(torch.bfloat16)
+print(model)
 # summary(model)
 tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False)
 
 model = LanguageModel(
     model=model,
     tokenizer=tokenizer,
-    parquet_path='/data2/csy/transformers/hub/datasets--skymizer--fineweb-edu-dedup-45B/parquets',
+    parquet_path='/data4/csy/transformers/hub/datasets--skymizer--fineweb-edu-dedup-45B/snapshots/78b628cd0cc608f00a2c8057af503a99b3fb6440/data',
     seq_len=2048,
     batch_size=6
 )
@@ -35,7 +36,7 @@ checkpoint_callback = cbs.ModelCheckpoint(
 )
 
 # logger = CSVLogger(save_dir='./logs/', flush_logs_every_n_steps=50)
-logger = WandbLogger(project="hoplm-0.4b", name="hoplm-0.4b")
+logger = WandbLogger(project="hoplm-0.4b", name="gdn-0.4b")
 
 prog_callback = cbs.RichProgressBar()
 
@@ -51,12 +52,12 @@ trainer = L.Trainer(
     logger=logger,
     log_every_n_steps=20,
     val_check_interval=10920,
-    num_sanity_val_steps=-1,
+    num_sanity_val_steps=0,
     accumulate_grad_batches=8,
     enable_model_summary=True,
 )
 
 trainer.fit(
     model=model,
-    ckpt_path='checkpoints/epoch=0-step=4095-mod.ckpt'
+    # ckpt_path='checkpoints/epoch=0-step=4095-mod.ckpt'
 )

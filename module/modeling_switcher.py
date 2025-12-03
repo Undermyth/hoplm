@@ -116,12 +116,12 @@ class SwitcherModel(nn.Module):
         assert config.n_layers % 2 == 0
         self.config = config
         self.n_layers = config.n_layers
-        self.n_enc_layers = config.n_layers // 2
-        self.n_dec_layers = config.n_layers - self.n_enc_layers
-        self.random_force_attn = config.random_force_attn
-        assert self.n_dec_layers % config.hybrid_freq == 0
+        self.n_enc_layers = config.n_layers
+        # self.n_dec_layers = config.n_layers - self.n_enc_layers
+        # self.random_force_attn = config.random_force_attn
+        # assert self.n_dec_layers % config.hybrid_freq == 0
 
-        self.switcher_idx = [i for i in range(self.n_dec_layers) if i % config.hybrid_freq == 0]
+        # self.switcher_idx = [i for i in range(self.n_dec_layers) if i % config.hybrid_freq == 0]
 
         delta_config = GatedDeltaNetConfig(
             hidden_size=config.dim,
@@ -137,12 +137,12 @@ class SwitcherModel(nn.Module):
         self.enc = nn.ModuleList([
             GatedDeltaNetBlock(config=delta_config, layer_idx=i) for i in range(self.n_enc_layers)
         ])
-        self.cache_k_proj = nn.Linear(config.dim, config.dim)
-        self.cache_v_proj = nn.Linear(config.dim, config.dim)
-        self.dec = nn.ModuleList([
-            SwitcherLayer(i, config) if i % config.hybrid_freq == 0 else GatedDeltaNetBlock(config=delta_config, layer_idx=i) 
-            for i in range(self.n_dec_layers)
-        ])
+        # self.cache_k_proj = nn.Linear(config.dim, config.dim)
+        # self.cache_v_proj = nn.Linear(config.dim, config.dim)
+        # self.dec = nn.ModuleList([
+        #     SwitcherLayer(i, config) if i % config.hybrid_freq == 0 else GatedDeltaNetBlock(config=delta_config, layer_idx=i) 
+        #     for i in range(self.n_dec_layers)
+        # ])
         self.norm = nn.RMSNorm(config.dim)
 
     def forward(
@@ -172,54 +172,54 @@ class SwitcherModel(nn.Module):
             # hidden_states: [B, T, d] -> [1, (total_length), d]
             hidden_states = index_first_axis(rearrange(hidden_states, 'b s ... -> (b s) ...'), indices).unsqueeze(0)
             
-        if position_ids is None:
-            # past_seen_tokens = layer_cache.get_sequence_length()   # [NOTE] not really past tokens. used only for training to decide position ids
-            if attention_mask is not None:
-                position_ids = torch.cumsum(attention_mask, dim=1).long() - 1
-                position_ids = index_first_axis(position_ids.flatten().unsqueeze(-1), indices).squeeze(-1).unsqueeze(0)
-            else:
-                position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0).expand_as(input_ids)    # maximum length in the batch
-        position_ids = position_ids.to(hidden_states.device)
+        # if position_ids is None:
+        #     # past_seen_tokens = layer_cache.get_sequence_length()   # [NOTE] not really past tokens. used only for training to decide position ids
+        #     if attention_mask is not None:
+        #         position_ids = torch.cumsum(attention_mask, dim=1).long() - 1
+        #         position_ids = index_first_axis(position_ids.flatten().unsqueeze(-1), indices).squeeze(-1).unsqueeze(0)
+        #     else:
+        #         position_ids = torch.arange(input_ids.shape[1]).unsqueeze(0).expand_as(input_ids)    # maximum length in the batch
+        # position_ids = position_ids.to(hidden_states.device)
 
-        attention_mask = None    # only use cu_seqlens instead of attention_mask for varlen inference
+        # attention_mask = None    # only use cu_seqlens instead of attention_mask for varlen inference
 
-        position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        # position_embeddings = self.rotary_emb(hidden_states, position_ids)
         for layer in self.enc:
             hidden_states, _, layer_cache = layer(hidden_states, attention_mask=attention_mask, past_key_values=layer_cache, use_cache=use_cache, cu_seqlens=cu_seqlens)
         
-        k_cache = self.cache_k_proj(hidden_states)
-        v_cache = self.cache_v_proj(hidden_states)
-        cos, sin = position_embeddings
-        k_cache = k_cache.view(hidden_states.shape[0], hidden_states.shape[1], self.config.n_heads, -1).transpose(1, 2)
-        v_cache = v_cache.view(hidden_states.shape[0], hidden_states.shape[1], self.config.n_heads, -1).transpose(1, 2)
-        k_cache = k_cache / torch.linalg.norm(k_cache, dim=-1, keepdim=True)
-        k_cache = apply_rotary_pos_emb(k_cache, cos, sin, position_ids=position_ids)
+        # k_cache = self.cache_k_proj(hidden_states)
+        # v_cache = self.cache_v_proj(hidden_states)
+        # cos, sin = position_embeddings
+        # k_cache = k_cache.view(hidden_states.shape[0], hidden_states.shape[1], self.config.n_heads, -1).transpose(1, 2)
+        # v_cache = v_cache.view(hidden_states.shape[0], hidden_states.shape[1], self.config.n_heads, -1).transpose(1, 2)
+        # k_cache = k_cache / torch.linalg.norm(k_cache, dim=-1, keepdim=True)
+        # k_cache = apply_rotary_pos_emb(k_cache, cos, sin, position_ids=position_ids)
 
-        if use_cache and past_key_values is not None:
-            if past_key_values['k_cache'] is None and past_key_values['v_cache'] is None:
-                past_key_values['k_cache'] = k_cache
-                past_key_values['v_cache'] = v_cache
-            else:
-                past_key_values['k_cache'] = torch.cat((past_key_values['k_cache'], k_cache), dim=1)
-                past_key_values['v_cache'] = torch.cat((past_key_values['v_cache'], v_cache), dim=1)
-            k_cache = past_key_values['k_cache']
-            v_cache = past_key_values['v_cache']
+        # if use_cache and past_key_values is not None:
+        #     if past_key_values['k_cache'] is None and past_key_values['v_cache'] is None:
+        #         past_key_values['k_cache'] = k_cache
+        #         past_key_values['v_cache'] = v_cache
+        #     else:
+        #         past_key_values['k_cache'] = torch.cat((past_key_values['k_cache'], k_cache), dim=1)
+        #         past_key_values['v_cache'] = torch.cat((past_key_values['v_cache'], v_cache), dim=1)
+        #     k_cache = past_key_values['k_cache']
+        #     v_cache = past_key_values['v_cache']
 
-        force_attn_idx = random.choice(self.switcher_idx) if self.random_force_attn else -1
-        for layer in self.dec:
-            if isinstance(layer, SwitcherLayer):
-                hidden_states, layer_cache = layer(
-                    hidden_states, 
-                    k_cache=k_cache, 
-                    v_cache=v_cache,
-                    position_embeddings=position_embeddings,
-                    force_attn=(layer.layer_idx == force_attn_idx),
-                    cu_seqlens=cu_seqlens,
-                    layer_cache=layer_cache,
-                    use_cache=use_cache
-                )
-            else:
-                hidden_states, _, layer_cache = layer(hidden_states, attention_mask=attention_mask, past_key_values=layer_cache, use_cache=use_cache, cu_seqlens=cu_seqlens)
+        # force_attn_idx = random.choice(self.switcher_idx) if self.random_force_attn else -1
+        # for layer in self.dec:
+        #     if isinstance(layer, SwitcherLayer):
+        #         hidden_states, layer_cache = layer(
+        #             hidden_states, 
+        #             k_cache=k_cache, 
+        #             v_cache=v_cache,
+        #             position_embeddings=position_embeddings,
+        #             force_attn=(layer.layer_idx == force_attn_idx),
+        #             cu_seqlens=cu_seqlens,
+        #             layer_cache=layer_cache,
+        #             use_cache=use_cache
+        #         )
+        #     else:
+        #         hidden_states, _, layer_cache = layer(hidden_states, attention_mask=attention_mask, past_key_values=layer_cache, use_cache=use_cache, cu_seqlens=cu_seqlens)
 
         hidden_states = self.norm(hidden_states)
         # return ModelOutput(last_hidden_state=hidden_states, past_key_values=past_key_values)
