@@ -5,6 +5,7 @@ import lm_eval
 from lm_eval.tasks import TaskManager
 from lm_eval.models.huggingface import HFLM
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from fla.models import GatedDeltaNetForCausalLM
 
 model = AutoModelForCausalLM.from_pretrained('m-a-p/340M-20B-GatedDeltaNet-pure-baseline', torch_dtype=torch.bfloat16, local_files_only=True).cuda()
 tokenizer = AutoTokenizer.from_pretrained('m-a-p/340M-20B-GatedDeltaNet-pure-baseline', local_files_only=True)
