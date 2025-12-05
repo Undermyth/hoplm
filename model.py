@@ -15,7 +15,7 @@ def create_warmup_cosine_scheduler(
     optimizer,
     warmup_epochs: int,
     total_epochs: int,
-    eta_min: float = 1e-6,
+    eta_min: float = 0.1,
     initial_lr: Optional[float] = None,
     last_epoch: int = -1
 ):
@@ -52,7 +52,7 @@ def create_warmup_cosine_scheduler(
     scheduler_cosine = CosineAnnealingLR(
         optimizer,
         T_max=cosine_duration,      # 余弦周期长度
-        eta_min=eta_min,
+        eta_min=initial_lr * eta_min,
         last_epoch=last_epoch - warmup_epochs if last_epoch >= warmup_epochs else -1
     )
     
@@ -77,8 +77,6 @@ class LanguageModel(L.LightningModule):
         self.seq_len = seq_len
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.train_dataset = StreamingParquet(parquet_path, self.batch_size, self.seq_len, self.tokenizer, split='train')
-        self.test_dataset = StreamingParquet(parquet_path, self.batch_size, self.seq_len, self.tokenizer, split='test')
 
         # resume training dataset
         self.pq_idx = 0
@@ -87,6 +85,14 @@ class LanguageModel(L.LightningModule):
         self.automatic_optimization = False
         self.grad_accum = 8
         self.grad_clip = 1.0
+        self.stream_loss = 0
+
+    def setup(self, stage=None):
+        if stage == 'fit' or stage is None:
+            ddp_rank = self.global_rank
+            world_size = self.trainer.world_size
+            self.train_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, ddp_rank=ddp_rank, world_size=world_size, split='train')
+            # self.test_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, ddp_rank=ddp_rank, world_size=world_size, split='test')
         
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=1)    # distributed sampling and batching done within StreamingParquet
@@ -103,10 +109,10 @@ class LanguageModel(L.LightningModule):
         self.rg_idx = state_dict['rg_idx']
         output = self.model(input_ids=x, label=y)
         loss = output.loss
-        self.log('train/loss', loss.detach().item(), on_step=True, prog_bar=True, logger=True)
 
         # manual optimization for multiple optimizers
         loss = loss / self.grad_accum
+        self.stream_loss += loss.item()
         self.manual_backward(loss)
         if (batch_idx + 1) % self.grad_accum == 0:
             for opt in self.optimizers():
@@ -115,6 +121,8 @@ class LanguageModel(L.LightningModule):
                 opt.zero_grad()
             for sch in self.lr_schedulers():
                 sch.step()
+            self.log('train/loss', self.stream_loss, on_step=True, prog_bar=True, logger=True, sync_dist=True)
+            self.stream_loss = 0
         
         # self.log('train/loss', loss.item(), on_step=True, prog_bar=True, logger=True)
         self.log('train/pq_idx', self.pq_idx.item(), on_step=True, prog_bar=True, logger=False)
@@ -166,8 +174,9 @@ class LanguageModel(L.LightningModule):
         self.rg_idx = rg_idx[self.global_rank].item()
         self.print(f'resume to dataset at pq_idx = {self.pq_idx}, rg_idx = {self.rg_idx}')
         state_dict = {'pq_idx': pq_idx[self.global_rank].item(), 'rg_idx': rg_idx[self.global_rank].item()}
-        self.train_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='train')
-        self.test_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='test')
+        self.train_dataset.load_state_dict(state_dict)
+        # self.train_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='train')
+        # self.test_dataset = StreamingParquet(self.parquet_path, self.batch_size, self.seq_len, self.tokenizer, state_dict=state_dict, split='test')
         
     def configure_optimizers(self):
         emb_params = list(self.model.model.emb.parameters())
@@ -183,10 +192,10 @@ class LanguageModel(L.LightningModule):
         muon_opt = torch.optim.Muon(hidden_2d_params, lr=0.02, momentum=0.95, weight_decay=0.)
         # optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, betas=(0.9, 0.95), weight_decay=1e-3)
         adam_scheduler = create_warmup_cosine_scheduler(
-            optimizer=adam_opt, warmup_epochs=270, total_epochs=54163, eta_min=2e-3
+            optimizer=adam_opt, warmup_epochs=270, total_epochs=54163, eta_min=0.1
         )
         muon_scheduler = create_warmup_cosine_scheduler(
-            optimizer=muon_opt, warmup_epochs=270, total_epochs=54163, eta_min=2e-3
+            optimizer=muon_opt, warmup_epochs=270, total_epochs=54163, eta_min=0.1
         )
         adam_scheduler_cfg = {
             'scheduler': adam_scheduler,

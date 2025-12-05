@@ -38,6 +38,8 @@ class StreamingParquet(IterableDataset):
         batch_size: int,
         seq_len: int,
         tokenizer,
+        ddp_rank: int,
+        world_size: int,
         device: str = 'cuda',
         tokenizer_batch_size: int = 128,    # just for tokenizer efficiency, will not influence training batch size
         tokenizer_threads: int = 8,
@@ -58,10 +60,17 @@ class StreamingParquet(IterableDataset):
         if state_dict is not None:
             print(f'[streaming parquet] start loader at pq_idx = {self.pq_idx}, rg_idx = {self.rg_idx}')
 
+        self.ddp_rank = ddp_rank
+        self.world_size = world_size
         self.inf_batch_document_iterator = self.document_batches()
 
+    def load_state_dict(self, state_dict: Dict[str, int]):
+        self.pq_idx = state_dict['pq_idx']
+        self.rg_idx = state_dict['rg_idx']
+        print(f'[streaming parquet] start loader at pq_idx = {self.pq_idx}, rg_idx = {self.rg_idx}')
+                
     def document_batches(self):
-        ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
+        # ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
         parquet_paths = list_parquet_files(self.parquet_dir)
         parquet_paths = parquet_paths[:-1] if self.split == "train" else parquet_paths[-1:]
         resume_pq_idx = self.pq_idx
@@ -74,12 +83,12 @@ class StreamingParquet(IterableDataset):
                 # Start from resume point if resuming on same file, otherwise from DDP rank
                 # I know this state resumption is a little bit tricky and a little bit hacky... sigh.
                 if resume_rg_idx is not None:
-                    base_idx = resume_rg_idx // ddp_world_size # in units of ddp_world_size
+                    base_idx = resume_rg_idx // self.world_size # in units of ddp_world_size
                     base_idx += 1 # advance by 1 so that we definitely don't repeat data after resuming
-                    rg_idx = base_idx * ddp_world_size + ddp_rank
+                    rg_idx = base_idx * self.world_size + self.ddp_rank
                     resume_rg_idx = None # set to None as we only want to do this a single time
                 else:
-                    rg_idx = ddp_rank
+                    rg_idx = self.ddp_rank
                 while rg_idx < pf.num_row_groups:
                     rg = pf.read_row_group(rg_idx)
                     batch = rg.column('text').to_pylist() # each batch is a parquet group, e.g. 1024 rows
@@ -87,7 +96,7 @@ class StreamingParquet(IterableDataset):
                     for i in range(0, len(batch), self.tokenizer_batch_size):
                         # print(pq_idx, rg_idx, i, len(batch))
                         yield batch[i:i+self.tokenizer_batch_size], (pq_idx, rg_idx)
-                    rg_idx += ddp_world_size # advance to the next row group (in DDP)
+                    rg_idx += self.world_size # advance to the next row group (in DDP)
                 pq_idx += 1 # advance to the next parquet file
                 
 
@@ -118,6 +127,7 @@ class StreamingParquet(IterableDataset):
             inputs = inputs_cpu.view(self.batch_size, self.seq_len)
             targets = targets_cpu.view(self.batch_size, self.seq_len)
             state_dict = {"pq_idx": pq_idx, "rg_idx": rg_idx} # we need this in case we wish to approximately resume training
+            # print(self.ddp_rank, state_dict)
             yield inputs, targets, state_dict
 
 if __name__ == '__main__':

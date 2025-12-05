@@ -31,7 +31,7 @@ checkpoint_callback = cbs.ModelCheckpoint(
     dirpath="./checkpoints",
     # save_last='link',
     save_on_exception=False,
-    every_n_train_steps=1365 * 8,    # save checkpoint every 0.5B tokens. 512M / (6 * 4 * 8 * 2K) = 1365
+    every_n_train_steps=1365 * 2,    # save checkpoint every 0.5B tokens. 512M / (6 * 4 * 8 * 2K) = 1365
     save_top_k=-1,
 )
 
@@ -51,8 +51,9 @@ trainer = L.Trainer(
     # gradient_clip_val=1.0,
     callbacks=[checkpoint_callback, prog_callback, lr_monitor],
     logger=logger,
-    log_every_n_steps=20 * 8,
-    val_check_interval=10920,
+    log_every_n_steps=20,
+    # val_check_interval=10920,
+    val_check_interval=5460,
     num_sanity_val_steps=0,
     # accumulate_grad_batches=8,
     enable_model_summary=True,
@@ -60,5 +61,5 @@ trainer = L.Trainer(
 
 trainer.fit(
     model=model,
-    # ckpt_path='checkpoints/epoch=0-step=4095-mod.ckpt'
+    ckpt_path='checkpoints/epoch=0-step=5460.ckpt'
 )
