@@ -52,7 +52,7 @@ def create_warmup_cosine_scheduler(
     scheduler_cosine = CosineAnnealingLR(
         optimizer,
         T_max=cosine_duration,      # 余弦周期长度
-        eta_min=initial_lr * eta_min,
+        eta_min=eta_min,
         last_epoch=last_epoch - warmup_epochs if last_epoch >= warmup_epochs else -1
     )
     
@@ -137,7 +137,9 @@ class LanguageModel(L.LightningModule):
         self.model.device = torch.device(f'cuda:{self.global_rank}')
         model = HFLM(
             pretrained=self.model,
-            tokenizer=self.tokenizer
+            tokenizer=self.tokenizer,
+            backend='causal',
+            add_bos_token=True
         )
         task_manager = TaskManager(
             metadata={
@@ -192,10 +194,10 @@ class LanguageModel(L.LightningModule):
         muon_opt = torch.optim.Muon(hidden_2d_params, lr=0.02, momentum=0.95, weight_decay=0.)
         # optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4, betas=(0.9, 0.95), weight_decay=1e-3)
         adam_scheduler = create_warmup_cosine_scheduler(
-            optimizer=adam_opt, warmup_epochs=270, total_epochs=54163, eta_min=0.1
+            optimizer=adam_opt, warmup_epochs=270, total_epochs=54163, eta_min=2e-4
         )
         muon_scheduler = create_warmup_cosine_scheduler(
-            optimizer=muon_opt, warmup_epochs=270, total_epochs=54163, eta_min=0.1
+            optimizer=muon_opt, warmup_epochs=270, total_epochs=54163, eta_min=2e-3
         )
         adam_scheduler_cfg = {
             'scheduler': adam_scheduler,

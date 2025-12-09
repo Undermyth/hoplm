@@ -22,7 +22,7 @@ tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False)
 model = LanguageModel(
     model=model,
     tokenizer=tokenizer,
-    parquet_path='/data2/csy/transformers/hub/datasets--skymizer--fineweb-edu-dedup-45B/parquets',
+    parquet_path='/data/csy/transformers/hub/datasets--skymizer--fineweb-edu-dedup-45B/parquets',
     seq_len=2048,
     batch_size=6
 )
@@ -54,12 +54,12 @@ trainer = L.Trainer(
     log_every_n_steps=20,
     # val_check_interval=10920,
     val_check_interval=5460,
-    num_sanity_val_steps=0,
+    num_sanity_val_steps=-1,
     # accumulate_grad_batches=8,
     enable_model_summary=True,
 )
 
 trainer.fit(
     model=model,
-    ckpt_path='checkpoints/epoch=0-step=5460.ckpt'
+    # ckpt_path='checkpoints/epoch=0-step=5460.ckpt'
 )
