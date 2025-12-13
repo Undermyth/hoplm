@@ -1,35 +1,50 @@
 import torch
-from module.modeling_switcher import SwitcherConfig, SwitcherModelForCausalLM
-from transformers import AutoTokenizer
-from torchinfo import summary
-
+# from torchinfo import summary
+import fla
+import lm_eval
+from lm_eval.tasks import TaskManager
+from lm_eval.models.huggingface import HFLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from fla.models import GatedDeltaNetForCausalLM
+from model import LanguageModel
+from module.modeling_switcher import SwitcherConfig, SwitcherModelForCausalLM
+
+tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False)
+# model = AutoModelForCausalLM.from_pretrained('m-a-p/340M-20B-GatedDeltaNet-pure-baseline', torch_dtype=torch.bfloat16, local_files_only=True).cuda()
+# tokenizer = AutoTokenizer.from_pretrained('m-a-p/340M-20B-GatedDeltaNet-pure-baseline', local_files_only=True)
 
 config = SwitcherConfig()
-model = SwitcherModelForCausalLM(config).cuda()
-model.eval()
-# tokenizer = AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B-Base', local_files_only=True)
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b", legacy=False)
-tokenizer.pad_token = tokenizer.eos_token
-
-print(model)
-# print(sum(p.numel() for p in model.parameters()) / 1_000_000, 'M')
-
-sentences = ['i am in the center of ', 'please give me an explanation about Fourier transformation in simple words']
-encodings = tokenizer(sentences, return_tensors='pt', padding=True)
-
-summary(model)
-
-# with torch.amp.autocast(device_type='cuda', dtype=torch.bfloat16):
-#  output = model(encodings.input_ids.cuda(), attention_mask=encodings.attention_mask.cuda(), use_cache=False)
-# print(output)
-
-
-from fla.models import DeltaNetForCausalLM
-model = DeltaNetForCausalLM.from_pretrained('m-a-p/340M-20B-DeltaNet-pure', torch_dtype=torch.bfloat16, local_files_only=True).cuda()
-tokenizer = AutoTokenizer.from_pretrained('m-a-p/340M-20B-DeltaNet-pure', local_files_only=True)
-print(tokenizer.vocab_size)
-print(model)
-summary(model)
-# print(sum(p.numel() for p in model.parameters()) / 1_000_000, 'M')
-# 
+model = SwitcherModelForCausalLM(config).to(torch.bfloat16)
+tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False, add_bos_token=True)
+ckpt = torch.load('checkpoints/epoch=0-step=43680.ckpt')
+ckpt = {k[6:]: v for k, v in ckpt['state_dict'].items() if k.startswith('model.')}
+model.load_state_dict(ckpt)
+model = model.cuda()
+model.device = torch.device('cuda')
+model = HFLM(
+    # pretrained="m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
+    pretrained=model,
+    # tokenizer="m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
+    tokenizer=tokenizer,
+    dtype=torch.bfloat16,
+    max_length=16384,
+    backend='causal',
+    add_bos_token=True
+)
+task_manager = TaskManager(
+    metadata={
+        "max_seq_lengths": [1024, 2048, 4096, 8192],
+        # "tokenizer": "m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
+        "shuffle": True,
+        "enable_cache": True,
+        "num_samples": 500,
+    },
+)
+results = lm_eval.simple_evaluate(
+    model=model,
+    task_manager=task_manager,
+    tasks=['lambada_openai'],
+    batch_size=1,
+    apply_chat_template=False
+)        
+print(results['results']) 

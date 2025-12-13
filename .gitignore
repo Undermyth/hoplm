@@ -219,3 +219,4 @@ checkpoints
 checkpoints/
 logs/
 wandb/
+lightning_logs/

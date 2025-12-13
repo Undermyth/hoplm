@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 from jaxtyping import Float, Int
 
-from fla.models.delta_net.modeling_delta_net import DeltaNetBlock
-from fla.models.delta_net.configuration_delta_net import DeltaNetConfig
-from fla.models.gated_deltanet.modeling_gated_deltanet import GatedDeltaNetBlock
+# from fla.models.delta_net.modeling_delta_net import DeltaNetBlock
+# from fla.models.delta_net.configuration_delta_net import DeltaNetConfig
+# from fla.models.gated_deltanet.modeling_gated_deltanet import GatedDeltaNetBlock
 from fla.models.gated_deltanet.configuration_gated_deltanet import GatedDeltaNetConfig
 from fla.modules.mlp import GatedMLP
 from fla.layers.utils import get_unpad_data, index_first_axis
@@ -17,6 +17,7 @@ from einops import rearrange
 
 from .switcher import CrossSwitcher, apply_rotary_pos_emb
 from .cache_utils import Cache
+from .gdn import SlowGatedDeltaNetBlock
 
 @dataclass
 class SwitcherConfig:
@@ -135,12 +136,12 @@ class SwitcherModel(nn.Module):
 
         self.emb = nn.Embedding(config.vocab_size, config.dim)
         self.enc = nn.ModuleList([
-            GatedDeltaNetBlock(config=delta_config, layer_idx=i) for i in range(self.n_enc_layers)
+            SlowGatedDeltaNetBlock(config=delta_config, layer_idx=i) for i in range(self.n_enc_layers)
         ])
         self.cache_k_proj = nn.Linear(config.dim, config.dim)
         self.cache_v_proj = nn.Linear(config.dim, config.dim)
         self.dec = nn.ModuleList([
-            SwitcherLayer(i, config) if i % config.hybrid_freq == 0 else GatedDeltaNetBlock(config=delta_config, layer_idx=i) 
+            SwitcherLayer(i, config) if i % config.hybrid_freq == 0 else SlowGatedDeltaNetBlock(config=delta_config, layer_idx=i) 
             for i in range(self.n_dec_layers)
         ])
         self.norm = nn.RMSNorm(config.dim)
