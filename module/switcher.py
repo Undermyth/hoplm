@@ -6,9 +6,10 @@ from typing import Tuple, Optional, Union
 from jaxtyping import Float
 
 from fla.modules import ShortConvolution
-from fla.ops.delta_rule import chunk_delta_rule
+from fla.ops.delta_rule import chunk_delta_rule, fused_recurrent_delta_rule
 from fla.ops.gated_delta_rule import chunk_gated_delta_rule, fused_recurrent_gated_delta_rule
 from fla.layers.utils import get_unpad_data, index_first_axis
+from fla.ops.deltaformer import deltaformer_attn
 
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
 
@@ -230,8 +231,8 @@ class CrossSwitcher(nn.Module):
 
         self.threshold = nn.Parameter(torch.ones(1, 1, self.n_heads, 1).cuda() * 0.5)
 
-        # self.mode = 'random'
-        self.mode = 'softmax'
+        self.mode = 'random'
+        # self.mode = 'softmax'
         self.s_proj.weight.requires_grad_(False)
         self.threshold.requires_grad_(False)
 
@@ -289,12 +290,12 @@ class CrossSwitcher(nn.Module):
             
         if not random_use_attn and self.mode != 'softmax':    # we will need to skip the computation of linear part iff under random selection or softmax mode 
             if q_len > 64:
-                o, recurrent_state = chunk_gated_delta_rule(
-                    q=q, k=k, v=v, g=gamma, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
+                o, recurrent_state = chunk_delta_rule(
+                    q=q, k=k, v=v, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
                 )
             else:
-                o, recurrent_state = fused_recurrent_gated_delta_rule(
-                    q=q, k=k, v=v, g=gamma, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
+                o, recurrent_state = fused_recurrent_delta_rule(
+                    q=q, k=k, v=v, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
                 )
 
             if use_cache:
@@ -323,15 +324,23 @@ class CrossSwitcher(nn.Module):
                 cos, sin = position_embeddings
                 q = apply_rotary_pos_emb(q, cos, sin)   # k will be embedded in the kv cache
 
-                # o_attn = F.scaled_dot_product_attention(q, k_cache, v_cache, is_causal=True)
-                attention_interface = ALL_ATTENTION_FUNCTIONS["flash_attention_2"]
-                o_attn, attn_weights = attention_interface(
-                    self,                        # used to determine dtype in huggingface wrapper
+                q = q.transpose(1, 2).contiguous().bfloat16()
+                k_cache = k_cache.transpose(1, 2).contiguous().bfloat16()
+                v_cache = v_cache.transpose(1, 2).contiguous().bfloat16()
+                o_attn = deltaformer_attn(
                     q, k_cache, v_cache,
+                    beta,
                     attention_mask=None,
-                    cu_seq_lens_q=cu_seqlens,
-                    cu_seq_lens_k=cu_seqlens
+                    cu_seqlens=cu_seqlens
                 )
+                # attention_interface = ALL_ATTENTION_FUNCTIONS["flash_attention_2"]
+                # o_attn, attn_weights = attention_interface(
+                #     self,                        # used to determine dtype in huggingface wrapper
+                #     q, k_cache, v_cache,
+                #     attention_mask=None,
+                #     cu_seq_lens_q=cu_seqlens,
+                #     cu_seq_lens_k=cu_seqlens
+                # )
                 # o_attn = o_attn.transpose(1, 2).contiguous()
                 o_attn = self.o_norm(o_attn)
                 if self.mode == 'random' or self.mode == 'softmax':

@@ -59,5 +59,5 @@ trainer = L.Trainer(
 
 trainer.fit(
     model=model,
-    ckpt_path='checkpoints/epoch=0-step=40950.ckpt'
+    # ckpt_path='checkpoints/epoch=0-step=40950.ckpt'
 )

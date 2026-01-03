@@ -178,7 +178,7 @@ class LanguageModel(L.LightningModule):
         self.print(f'resume to dataset at pq_idx = {self.pq_idx}, rg_idx = {self.rg_idx}')
         state_dict = {'pq_idx': pq_idx[self.global_rank].item(), 'rg_idx': rg_idx[self.global_rank].item()}
         self.train_dataset.load_state_dict(state_dict)
-        self.tune_optimizer(checkpoint)
+        # self.tune_optimizer(checkpoint)
 
     def tune_optimizer(self, state_dict):
         state_dict['lr_schedulers'][0]['_schedulers'][1]['T_max'] = 53893
