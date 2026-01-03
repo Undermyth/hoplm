@@ -16,16 +16,16 @@ tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False)
 config = SwitcherConfig()
 model = SwitcherModelForCausalLM(config).to(torch.bfloat16)
 tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False, add_bos_token=True)
-ckpt = torch.load('checkpoints/epoch=0-step=109200.ckpt')
+ckpt = torch.load('checkpoints/archive/gdn/gdn-step=109200-20bt.ckpt')
 ckpt = {k[6:]: v for k, v in ckpt['state_dict'].items() if k.startswith('model.')}
 model.load_state_dict(ckpt)
 model = model.cuda()
 model.device = torch.device('cuda')
 model = HFLM(
-    pretrained="m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
-    # pretrained=model,
-    tokenizer="m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
-    # tokenizer=tokenizer,
+    # pretrained="m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
+    pretrained=model,
+    # tokenizer="m-a-p/340M-20B-GatedDeltaNet-pure-baseline",
+    tokenizer=tokenizer,
     dtype=torch.bfloat16,
     max_length=16384,
     backend='causal',
@@ -43,7 +43,7 @@ task_manager = TaskManager(
 results = lm_eval.simple_evaluate(
     model=model,
     task_manager=task_manager,
-    tasks=['arc_challenge'],
+    tasks=['hellaswag', 'winogrande', 'piqa'],
     batch_size=1,
     apply_chat_template=False
 )        

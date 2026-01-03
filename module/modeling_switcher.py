@@ -17,6 +17,7 @@ from einops import rearrange
 
 from .switcher import CrossSwitcher, apply_rotary_pos_emb
 from .cache_utils import Cache
+from .gdn import SlowGatedDeltaNetBlock
 
 @dataclass
 class SwitcherConfig:

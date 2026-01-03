@@ -36,7 +36,7 @@ checkpoint_callback = cbs.ModelCheckpoint(
 )
 
 # logger = CSVLogger(save_dir='./logs/', flush_logs_every_n_steps=50)
-logger = WandbLogger(project="hoplm-0.4b", name="gdn-0.4b-mu")
+logger = WandbLogger(project="hoplm-0.4b", name="slowgdn-0.4b-mu")
 
 prog_callback = cbs.RichProgressBar()
 
