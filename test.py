@@ -16,7 +16,7 @@ tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False)
 config = SwitcherConfig()
 model = SwitcherModelForCausalLM(config).to(torch.bfloat16)
 tokenizer = AutoTokenizer.from_pretrained('meta-llama/Llama-2-7b', legacy=False, add_bos_token=True)
-ckpt = torch.load('checkpoints/epoch=0-step=43680.ckpt')
+ckpt = torch.load('checkpoints/archive/hoplm/hoplm-step=106470-19.5bt.ckpt')
 ckpt = {k[6:]: v for k, v in ckpt['state_dict'].items() if k.startswith('model.')}
 model.load_state_dict(ckpt)
 model = model.cuda()
@@ -43,7 +43,7 @@ task_manager = TaskManager(
 results = lm_eval.simple_evaluate(
     model=model,
     task_manager=task_manager,
-    tasks=['lambada_openai'],
+    tasks=['hellaswag', 'winogrande', 'piqa'],
     batch_size=1,
     apply_chat_template=False
 )        

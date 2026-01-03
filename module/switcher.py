@@ -230,7 +230,8 @@ class CrossSwitcher(nn.Module):
 
         self.threshold = nn.Parameter(torch.ones(1, 1, self.n_heads, 1).cuda() * 0.5)
 
-        self.mode = 'random'
+        # self.mode = 'random'
+        self.mode = 'softmax'
         self.s_proj.weight.requires_grad_(False)
         self.threshold.requires_grad_(False)
 
@@ -286,7 +287,7 @@ class CrossSwitcher(nn.Module):
         else:
             random_use_attn = False
             
-        if not random_use_attn:
+        if not random_use_attn and self.mode != 'softmax':    # we will need to skip the computation of linear part iff under random selection or softmax mode 
             if q_len > 64:
                 o, recurrent_state = chunk_gated_delta_rule(
                     q=q, k=k, v=v, g=gamma, beta=beta, initial_state=recurrent_state, cu_seqlens=cu_seqlens, output_final_state=use_cache, use_qk_l2norm_in_kernel=True
@@ -308,7 +309,7 @@ class CrossSwitcher(nn.Module):
         # hybrid attention into output
         # ------------------------------------------------------------------------------
         s = None
-        if self.training or q_len == 1:     # in inference, we do not allow any attention in prefilling, only switching in decoding
+        if self.training or q_len == 1 or self.mode == 'softmax':     # in inference, we do not allow any attention in prefilling, only switching in decoding
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
             v = v.transpose(1, 2)
@@ -317,7 +318,7 @@ class CrossSwitcher(nn.Module):
                 o_reshaped = rearrange(o, "b t h d -> b t (h d)")
                 s = self.s_proj(o_reshaped).sigmoid().unsqueeze(-1)    # [VARI] maybe before norm?
                 s = heaviside(s - self.threshold)
-            if (self.mode == 'random' and random_use_attn) or self.mode == 'hybrid':
+            if (self.mode == 'random' and random_use_attn) or self.mode == 'hybrid' or self.mode == 'softmax':
                 q = q / torch.linalg.norm(q, dim=-1, keepdim=True)
                 cos, sin = position_embeddings
                 q = apply_rotary_pos_emb(q, cos, sin)   # k will be embedded in the kv cache
@@ -333,7 +334,7 @@ class CrossSwitcher(nn.Module):
                 )
                 # o_attn = o_attn.transpose(1, 2).contiguous()
                 o_attn = self.o_norm(o_attn)
-                if self.mode == 'random':
+                if self.mode == 'random' or self.mode == 'softmax':
                     o = o_attn
                 else:
                     o = self.o_norm(o)
